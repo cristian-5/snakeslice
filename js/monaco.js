@@ -28,8 +28,7 @@ require([ "vs/editor/editor.main" ], function() {
 	});
 
 	window.editor = monaco.editor.create(document.getElementById("monaco"), {
-		value: localStorage.getItem("py-code") ||
-			"\n#include <iostream>\nusing namespace std;\n\nint main() {\n\tcout << \"Hello, world!\" << endl;\n\treturn 0;\n}\n",
+		value: localStorage.getItem("py-code") || "x = 0\nprint(x)",
 		language: "python",
 		codeLens: true,
 		cursorStyle: "line",
