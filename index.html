@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🐍</text></svg>'>
+	<title>Snake SL/CE Interpreter</title>
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/8.0.0/normalize.min.css">
+	<link rel="stylesheet" href="css/style.css">
+
+	<link rel="stylesheet" href="css/fontawesome.min.css">
+	<link rel="stylesheet" href="css/solid.min.css">
+	<link rel="stylesheet" href="css/vanilla-toast.css">
+
+	<link rel="stylesheet" href="css/xterm.css">
+
+	<script type="text/javascript"> // UTILITY FUNCTIONS
+		const wait = ms => new Promise(r => setTimeout(() => r(true), ms));
+		Array.prototype.top = function() { return this[this.length - 1]; };
+		Array.make = function(sizes) { // make multidimensional array
+			if (sizes.length === 0) return undefined;
+			let A = new Array(sizes[0]);
+			for (let i = 0; i < sizes[0]; i++)
+				A[i] = sizes.length === 1 ? undefined : Array.make(sizes.slice(1));
+			return A;
+		};
+	</script>
+
+	<script type="text/javascript" src="js/language.js"></script>
+	<script type="text/javascript" src="js/vanilla-toast.js"></script>
+	<script type="text/javascript" src="js/xterm.js"></script>
+	<script type="text/javascript" src="js/errors.js"></script>
+	<script type="text/javascript" src="js/tree.js"></script>
+	<script type="text/javascript" src="js/parser.js"></script>
+	<script type="text/javascript" src="js/main.js"></script>
+
+	<!-- LIBRARIES -->
+
+	<script type="text/javascript" src="js/lib/cstdlib.js"></script>
+	<script type="text/javascript" src="js/lib/cmath.js"></script>
+	<script type="text/javascript" src="js/lib/ctime.js"></script>
+
+</head>
+<body>
+	
+	<nav>
+		<h1>🐍 Snake SL<span style="color:#6e6e6e;">/</span>CE Python Interpreter<sup style="color:#2222f5;margin:0 5px">beta</sup></h1>
+		<div class="cassette">
+			<button onclick="compile('client')" id="compile"><i class="fa-solid fa-file-circle-check gray"></i></button>
+			<button onclick="run()" id="run"><i class="fa-solid fa-play green" style="margin:0 8px 0 0"></i> <span id="run-text">Run</span></button>
+		</div>
+		<div class="hidden-buttons">
+			<select id="lang" onChange="updateLanguage()">
+				<option value="EN" selected>🇺🇸 English</option>
+				<option value="IT">🇮🇹 Italiano</option>
+			</select>
+			<script type="text/javascript">
+				function updateLanguage() {
+					const lang = document.getElementById("lang");
+					Language.current = lang.options[lang.selectedIndex].value;
+					const $ = id => document.getElementById(id);
+					switch (Language.current) {
+						case "IT":
+							$("compile").title = "Verifica";
+							$("run").title = $("run-text").innerText = "Esegui";
+						break;
+						case "EN":
+							$("compile").title = "Verify";
+							$("run").title = $("run-text").innerText = "Run";
+						break;
+					}
+				}
+				updateLanguage();
+			</script>
+			<button onclick="madeWithLove()"><i class="fa-solid fa-heart red"></i></button>
+		</div>
+	</nav>
+
+	<div id="splitgrid">
+		<section id="code-box">
+			<header>
+				<div><i class="fa-solid fa-code green"></i> <span style="margin: 0 4px">Code</span></div>
+			</header>
+			<div id="monaco"></div>
+		</section>
+		<section id="view-box">
+			<header>
+				<div><i class="fa-solid fa-bug orange"></i> <span style="margin: 0 4px">Debug View</span></div>
+			</header>
+			<div id="debug"></div>
+		</section>
+		<section id="term-box">
+			<header>
+				<div><i class="fa-solid fa-terminal blue"></i> <span style="margin: 0 4px">Console</span></div>
+			</header>
+			<pre id="terminal"></pre>
+		</section>
+		<div id="gutter-v" class="gutter"></div>
+		<div id="gutter-h" class="gutter"></div>
+	</div>
+	
+	<script
+		src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.5/require.min.js"
+		integrity="sha256-0SGl1PJNDyJwcV5T+weg2zpEMrh7xvlwO4oXgvZCeZk="
+		crossorigin="anonymous"
+	></script>
+	<script type="module" src="js/monaco.js"></script>
+	<script type="module">
+		window.terminal = new Terminal({
+			convertEol: true, cursorBlink: true,
+			fontSize: 16, fontFamily: "monospace",
+			theme: theme.dark
+		});
+        window.terminal.open(document.getElementById("terminal"));
+		window.terminal.input_enabled = false;
+		window.terminal.input_ready = false;
+		window.terminal.input_data = "";
+		window.terminal.onKey(e => {
+			if (!window.terminal.input_enabled) return;
+			switch (e.key) {
+				case "\r": case "\n":
+					window.terminal.write('\n');
+					if (window.terminal.input_data.length > 0) {
+						window.terminal.input_ready = true;
+						window.terminal.input_enabled = false;
+					}
+				break;
+				case "\b": case "\x7f": // backspace
+					if (window.terminal.input_data.length === 0) return;
+					window.terminal.write('\b \b');
+					window.terminal.input_data = window.terminal.input_data.slice(0, - 1);
+				break;
+				default:
+					window.terminal.input_data += e.key;
+					window.terminal.write(e.key);
+				break;
+			}
+		});
+		
+		import splitGrid from "https://cdn.jsdelivr.net/npm/split-grid@1.0.11/+esm";
+		window.Split = splitGrid;
+		Split({
+			columnGutters: [{
+				minSize: 100,
+				track: 1,
+				element: document.getElementById("gutter-v"),
+			}],
+			rowGutters: [{
+				minSize: 100,
+				track: 1,
+				element: document.getElementById("gutter-h"),
+			}]
+		});
+	</script>
+</body>
+</html>
