@@ -274,21 +274,21 @@ class Environment {
 		this.globalNames = null;     // names declared "global"
 	}
 
-	#owner(name) {
+	_owner(name) {
 		if (this.values.has(name)) return this;
 		if (this.aliases.has(name)) return this.aliases.get(name);
 		for (const u of this.usings) if (u.values.has(name)) return u;
-		return this.parent?.#owner(name);
+		return this.parent?._owner(name);
 	}
 
-	#namespace(name) {
-		return this.namespaces.get(name) ?? this.parent?.#namespace(name);
+	_namespace(name) {
+		return this.namespaces.get(name) ?? this.parent?._namespace(name);
 	}
 
 	findNamespace(tokens) {
 		let ns;
 		for (const t of tokens) {
-			ns = ns ? ns.namespaces.get(t.lexeme) : this.#namespace(t.lexeme);
+			ns = ns ? ns.namespaces.get(t.lexeme) : this._namespace(t.lexeme);
 			if (!ns) throw new CodeError(Language.main.errors.UNS, t, [ t.lexeme, t.lexeme ]);
 		}
 		return ns;
@@ -304,7 +304,7 @@ class Environment {
 		const name = token.lexeme;
 		if (this.locals?.has(name) && !this.values.has(name))
 			throw new CodeError(errors.ULV, token, [ name ]);
-		const owner = this.#owner(name);
+		const owner = this._owner(name);
 		if (owner) return owner;
 		const header = Library.headerOf(name);
 		if (header) throw new CodeError(errors.NIH, token, [ name, header ]);

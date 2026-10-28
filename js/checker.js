@@ -132,22 +132,22 @@ class SymbolScope {
 		info.overloads.push(f);
 	}
 
-	#owner(name) {
+	_owner(name) {
 		if (this.values.has(name)) return this;
 		if (this.aliases.has(name)) return this.aliases.get(name);
 		for (const u of this.usings) if (u.values.has(name)) return u;
-		return this.parent?.#owner(name);
+		return this.parent?._owner(name);
 	}
 
-	#namespace(name) { return this.namespaces.get(name) ?? this.parent?.#namespace(name); }
+	_namespace(name) { return this.namespaces.get(name) ?? this.parent?._namespace(name); }
 
 	findNamespace(tokens) {
 		const errors = Language.main.errors;
 		let ns;
 		for (const t of tokens) {
-			ns = ns ? ns.namespaces.get(t.lexeme) : this.#namespace(t.lexeme);
+			ns = ns ? ns.namespaces.get(t.lexeme) : this._namespace(t.lexeme);
 			if (!ns) {
-				if (t === tokens[0] && this.#owner(t.lexeme)) throw new CodeError(errors.ATT, t, [ t.lexeme ]);
+				if (t === tokens[0] && this._owner(t.lexeme)) throw new CodeError(errors.ATT, t, [ t.lexeme ]);
 				throw new CodeError(errors.UNS, t, [ t.lexeme, t.lexeme ]);
 			}
 		}
@@ -162,7 +162,7 @@ class SymbolScope {
 			if (!ns.values.has(token.member)) throw new CodeError(errors.UVR, token, [ token.lexeme ]);
 			return ns.values.get(token.member);
 		}
-		const owner = this.#owner(token.lexeme);
+		const owner = this._owner(token.lexeme);
 		if (owner) return owner.values.get(token.lexeme);
 		const header = Library.headerOf(token.lexeme);
 		if (header) throw new CodeError(errors.NIH, token, [ token.lexeme, header ]);

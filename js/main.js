@@ -69,100 +69,30 @@ Input.prompt = async () => {
 	return data;
 };
 
-Environment.on_define = async (id, data) => {
-	switch (data.dimensions) {
-		case 1:
-			document.getElementById("debug").innerHTML += `
-			<div class="variable ${data.base}"><table class="array" data-id="${id}">
-				<tr><th colspan="${data.sizes[0]}">
-					<span class="type">${data.base}</span> <b>${id}</b>[${data.sizes[0]}]</th>
-				</tr>
-				<tr>${Array.from({ length: data.sizes[0] }).map((_, i) => `
-					<td title="[${i}]">${data.value[i] === undefined ?
-						'<span class="w-3">?</span>' : data.value[i]}
-					</td>
-				`).join('')}</tr>
-			</table></div>`;
-		return;
-		case 2:
-			document.getElementById("debug").innerHTML += `
-			<div class="variable ${data.base}"><table class="array" data-id="${id}">
-				<tr><th colspan="${data.sizes[0]}">
-					<span class="type">${data.base}</span>
-					<b>${id}</b>[${data.sizes[0]}][${data.sizes[1]}]</th>
-				</tr>
-				${Array.from({ length: data.sizes[0] }).map((_, i) => `
-					<tr>${Array.from({ length: data.sizes[1] }).map((_, j) => `
-						<td title="[${i}][${j}]">${data.value[i][j] === undefined ?
-							'<span class="w-3">?</span>' : data.value[i][j]}
-						</td>
-					`).join('')}</tr>
-				`).join('')}
-			</table></div>`;
-		return;
-	}
-	if (data.isConst) return; // don't show constants in debug view
-	switch (data.type) {
-		case "int": case "float": case "bool":
-			document.getElementById("debug").innerHTML += `
-			<div class="variable ${data.type}"><table data-id="${id}">
-				<tr><th><span class="type">${data.base}</span> <b>${id}</b></th></tr>
-				<tr><td>${ data.value === undefined ?
-					'<span class="w-3">?</span>' : data.value
-				}</td></tr>
-			</table></div>`;
-		break;
-		case "char":
-			document.getElementById("debug").innerHTML += `
-			<div class="variable ${data.type}"><table data-id="${id}">
-				<tr><th><span class="type">${data.base}</span> <b>${id}</b></th></tr>
-				<tr><td>'${ data.value === undefined ?
-					'<span class="w-3">?</span>' : escaped(String.fromCharCode(data.value))
-				}'</td></tr>
-				<tr><td>${ data.value || "" }</td></tr>
-			</table></div>`;
-		break;
-		case "string":
-			document.getElementById("debug").innerHTML += `
-			<div class="variable ${data.type}"><table data-id="${id}">
-				<tr><th><span class="type">${data.base}</span> <b>${id}</b></th></tr>
-				<tr><td>"${ data.value === undefined ?
-					'<span class="w-3">?</span>' : escaped(data.value)
-				}"</td></tr>
-			</table></div>`;
-		break;
-	}
-};
+// ==== Debug view: global variables ==========================================
+// Python variables have no declared type: the whole box is redrawn whenever
+// the value (and possibly its type) changes.
 
-Environment.on_change = async (id, data) => {
-	const to_string = d => new Value(d, data.base).toString();
-	const variable = document.querySelector(`table[data-id="${id}"]`);
-	if (!variable) return;
-	switch (data.dimensions) {
-		case 0:
-			variable.querySelector("td").innerHTML =
-				data.value === undefined ?
-				'<span class="w-3">?</span>' :
-				to_string(data.value);
-		return;
-		case 1: {
-			const tds = variable.querySelectorAll("td");
-			for (let i = 0; i < data.sizes[0]; i++)
-				tds[i].innerHTML =
-				data.value[i] === undefined ?
-				'<span class="w-3">?</span>' :
-				to_string(data.value[i]);
-		} return;
-		case 2: {
-			const tds = variable.querySelectorAll("td");
-			for (let i = 0; i < data.sizes[0]; i++)
-				for (let j = 0; j < data.sizes[1]; j++)
-					tds[i * data.sizes[1] + j].innerHTML =
-					data.value[i][j] === undefined ?
-					'<span class="w-3">?</span>' :
-					to_string(data.value[i][j]);
-		} return;
+function variableHTML(id, data) {
+	const unset = '<span class="w-3">?</span>';
+	const css = { int: "int", float: "float", bool: "bool", str: "string", None: "none" }[data.type];
+	let shown;
+	switch (data.type) {
+		case "str": shown = `"${escaped(data.value)}"`; break;
+		default: shown = data.toString();
 	}
+	return `
+	<div class="variable ${css}"><table data-id="${id}">
+		<tr><th><span class="type">${data.type}</span> <b>${id}</b></th></tr>
+		<tr><td>${shown}</td></tr>
+	</table></div>`;
+}
+
+Environment.on_define = Environment.on_change = async (id, data) => {
+	const debug = document.getElementById("debug");
+	const existing = debug.querySelector(`table[data-id="${id}"]`);
+	if (existing) existing.closest(".variable").outerHTML = variableHTML(id, data);
+	else debug.innerHTML += variableHTML(id, data);
 };
 
 function madeWithLove() {
