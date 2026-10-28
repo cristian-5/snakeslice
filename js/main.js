@@ -21,6 +21,7 @@ async function compile(sender = null) {
 	try {
 		const parser = new Parser(code);
 		AST = await parser.parse();
+		new TypeChecker().check(AST);
 	} catch (e) {
 		AST = null;
 		if (!(e instanceof CodeError)) {
@@ -58,12 +59,12 @@ async function run() {
 	}
 }
 
-Cout.print = text => terminal.write(text);
-Cin.prompt = async () => {
+Print.write = text => terminal.write(text);
+Input.prompt = async () => {
 	terminal.input_enabled = true;
 	while (!terminal.input_ready) await wait(100);
 	terminal.input_enabled = terminal.input_ready = false;
-	const data = terminal.input_data.trim();
+	const data = terminal.input_data.replace(/[\r\n]+$/, ""); // input() keeps the spaces typed
 	terminal.input_data = "";
 	return data;
 };
