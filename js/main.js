@@ -73,18 +73,51 @@ Input.prompt = async () => {
 // Python variables have no declared type: the whole box is redrawn whenever
 // the value (and possibly its type) changes.
 
+// CSS class (colour) of a Python type
+const cssOf = { int: "int", float: "float", bool: "bool", str: "string", None: "none", list: "list" };
+
+function cellHTML(v) {
+	switch (v.type) {
+		case "str": return `"${escaped(v.value)}"`;
+		case "list": return escaped(v.toString());
+		default: return v.toString();
+	}
+}
+
+// "int" if every element of a (nested) list is an int, "list" when mixed or empty
+function elementType(list) {
+	const types = new Set();
+	const visit = l => l.forEach(e => e.type === "list" ? visit(e.value) : types.add(e.type));
+	visit(list);
+	return types.size === 1 ? [ ...types ][0] : "list";
+}
+
 function variableHTML(id, data) {
-	const unset = '<span class="w-3">?</span>';
-	const css = { int: "int", float: "float", bool: "bool", str: "string", None: "none" }[data.type];
-	let shown;
-	switch (data.type) {
-		case "str": shown = `"${escaped(data.value)}"`; break;
-		default: shown = data.toString();
+	if (data.type === "list") {
+		const rows = data.value, base = elementType(rows);
+		const is2D = rows.length > 0 && rows.every(r => r.type === "list");
+		if (!rows.length) return `
+		<div class="variable list"><table class="array" data-id="${id}">
+			<tr><th><span class="type">list</span> <b>${id}</b>[0]</th></tr>
+			<tr><td>[]</td></tr>
+		</table></div>`;
+		if (!is2D) return `
+		<div class="variable ${cssOf[base]}"><table class="array" data-id="${id}">
+			<tr><th colspan="${rows.length}"><span class="type">${base}</span> <b>${id}</b>[${rows.length}]</th></tr>
+			<tr>${rows.map((e, i) => `<td title="[${i}]">${cellHTML(e)}</td>`).join('')}</tr>
+		</table></div>`;
+		const cols = Math.max(1, ...rows.map(r => r.value.length));
+		return `
+		<div class="variable ${cssOf[base]}"><table class="array" data-id="${id}">
+			<tr><th colspan="${cols}"><span class="type">${base}</span> <b>${id}</b>[${rows.length}][${cols}]</th></tr>
+			${rows.map((r, i) => `<tr>${r.value.map((e, j) =>
+				`<td title="[${i}][${j}]">${cellHTML(e)}</td>`).join('')}</tr>`).join('')}
+		</table></div>`;
 	}
 	return `
-	<div class="variable ${css}"><table data-id="${id}">
+	<div class="variable ${cssOf[data.type]}"><table data-id="${id}">
 		<tr><th><span class="type">${data.type}</span> <b>${id}</b></th></tr>
-		<tr><td>${shown}</td></tr>
+		<tr><td>${cellHTML(data)}</td></tr>
 	</table></div>`;
 }
 

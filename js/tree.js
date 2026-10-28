@@ -1,4 +1,3 @@
-
 // ==== Settings ===============================================================
 
 /// Recursion limit (Python's RecursionError).
@@ -26,7 +25,7 @@ class Visitable {
 // str -> string, None -> null.
 
 const typeOf = v => v === null ? "None" : typeof v === "bigint" ? "int" :
-	typeof v === "number" ? "float" : typeof v === "boolean" ? "bool" : "str";
+	typeof v === "number" ? "float" : typeof v === "boolean" ? "bool" : Array.isArray(v) ? "list" : "str";
 
 /// Python's repr() of a float (1.0, 1e-05, 1e+16, inf, nan...)
 function floatRepr(x) {
@@ -46,9 +45,24 @@ function floatRepr(x) {
 	return (neg ? "-" : "") + out;
 }
 
+/// Python's repr() of a string ('it\'s' -> "it's")
+function strRepr(s) {
+	const q = s.includes("'") && !s.includes('"') ? '"' : "'";
+	return q + s.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\t/g, "\\t").replace(/\r/g, "\\r")
+		.replace(new RegExp(q, "g"), "\\" + q) + q;
+}
+
+/// repr() of a Value (strings are quoted), used inside lists
+function pyRepr(v, depth = 0) {
+	if (v.type === "str") return strRepr(v.value);
+	if (v.type === "list") return depth > 30 ? "[...]" : "[" + v.value.map(e => pyRepr(e, depth + 1)).join(", ") + "]";
+	return pyStr(v.value);
+}
+
 /// Python's str()
 function pyStr(v) {
 	if (v === null) return "None";
+	if (Array.isArray(v)) return "[" + v.map(e => pyRepr(e, 1)).join(", ") + "]";
 	switch (typeof v) {
 		case "bigint": return v.toString();
 		case "number": return floatRepr(v);
@@ -65,6 +79,26 @@ function isTruthy(v) {
 		case "boolean": return v;
 		default: return v.length > 0;
 	}
+}
+
+/// Python's == between two Values (1 == 1.0, lists compare by content)
+function pyEq(a, b) {
+	if (TypeRules.isIntegral(a.type) && TypeRules.isIntegral(b.type)) return a.to("int").value === b.to("int").value;
+	if (TypeRules.isNumber(a.type) && TypeRules.isNumber(b.type)) return a.to("float").value === b.to("float").value;
+	if (a.type === "list" && b.type === "list")
+		return a.value.length === b.value.length && a.value.every((e, i) => pyEq(e, b.value[i]));
+	return a.type === b.type && a.value === b.value;
+}
+
+/// Sorts Values in place (numbers with numbers, strings with strings)
+function sortValues(arr) {
+	arr.sort((a, b) => {
+		const rule = TypeRules.compare("<", a.type, b.type);
+		if (!rule) throw new NativeError("UOB", [ "<", a.type, b.type ]);
+		const x = rule.operand ? a.to(rule.operand).value : a.value, y = rule.operand ? b.to(rule.operand).value : b.value;
+		return x < y ? -1 : x > y ? 1 : 0;
+	});
+	return arr;
 }
 
 /// Error thrown by native functions, converted to CodeError by Call.
@@ -95,13 +129,13 @@ function formatValue(v, spec) {
 		if (align === "^") return fill.repeat(Math.floor(n / 2)) + s + fill.repeat(n - Math.floor(n / 2));
 		return fill.repeat(n) + s;
 	};
-	if (type === "s" || (type === null && v.type === "str")) {
-		if (v.type !== "str") fail();
-		let s = v.value;
+	if (type === "s" || (type === null && (v.type === "str" || v.type === "list"))) {
+		if (v.type !== "str" && v.type !== "list") fail();
+		let s = v.type === "list" ? pyStr(v.value) : v.value;
 		if (precision !== null) s = Array.from(s).slice(0, precision).join("");
 		return pad(s, spec.align ?? "<");
 	}
-	if (v.type === "str" || v.type === "None") fail();
+	if (v.type === "str" || v.type === "None" || v.type === "list") fail();
 	const raw = typeof v.value === "boolean" ? (v.value ? 1n : 0n) : v.value;
 	const isFloat = typeof raw === "number";
 	let digits, negative;
@@ -175,6 +209,13 @@ class Library {
 		Object.assign(entry.constants, constants);
 		Library.#modules.set(header, entry);
 	}
+
+	static #methods = new Map();
+	/// Methods of a type: Library.registerMethods("list", { append: [ { args: ["any"], ret: "None", mutates: true, run: (self, x) => ... } ] })
+	static registerMethods(type, methods) {
+		Library.#methods.set(type, Object.assign(Library.#methods.get(type) ?? {}, methods));
+	}
+	static methods(type) { return Library.#methods.get(type); }
 
 	static has(name) { return name !== "" && Library.#modules.has(name); }
 	static entry(name) { return Library.#modules.get(name); }
@@ -263,6 +304,20 @@ class Environment {
 	}
 
 	static key(token) { return token.qualifiers ? token.member : token.lexeme; }
+
+	/// A list was modified in place: redraw every global variable that contains it.
+	static notify(list) {
+		if (!Environment.global) return;
+		for (const [ name, v ] of Environment.global.values)
+			if (v instanceof Value && v.type === "list" && Environment.#contains(v.value, list))
+				Environment.on_change(name, v);
+	}
+
+	static #contains(arr, target, depth = 0) {
+		if (arr === target) return true;
+		if (depth > 20) return false;
+		return arr.some(e => e.type === "list" && Environment.#contains(e.value, target, depth + 1));
+	}
 
 	constructor(parent) {
 		this.parent = parent;
@@ -430,6 +485,12 @@ class FunctionDefinition extends Statement {
 	}
 }
 
+/// Stores a value in a variable or in a list element
+async function storeTarget(target, value) {
+	if (target instanceof Subscript) await target.assign(value);
+	else Environment.current.set(target.name, value);
+}
+
 class Assignment extends Statement {
 	constructor(targets, value) {
 		super(targets[0].start, value.end);
@@ -437,7 +498,7 @@ class Assignment extends Statement {
 	}
 	async execute() {
 		const value = await this.value.execute();
-		for (const t of this.targets) Environment.current.set(t.name, value);
+		for (const t of this.targets) await storeTarget(t, value);
 	}
 }
 
@@ -448,7 +509,7 @@ class MultiAssignment extends Statement { // a, b = b, a
 	}
 	async execute() {
 		const values = await evalAll(this.values);
-		this.targets.forEach((t, i) => Environment.current.set(t.name, values[i]));
+		for (let i = 0; i < this.targets.length; i++) await storeTarget(this.targets[i], values[i]);
 	}
 }
 
@@ -460,7 +521,7 @@ class AugAssignment extends Statement { // x += 1
 		this.value = new InfixExpression(target,
 			{ ...operator, lexeme: AugAssignment.#compound[operator.lexeme] }, right);
 	}
-	async execute() { Environment.current.set(this.target.name, await this.value.execute()); }
+	async execute() { await storeTarget(this.target, await this.value.execute()); }
 }
 
 class Print extends Statement {
@@ -507,6 +568,19 @@ class While extends Statement {
 	}
 }
 
+async function evalRangeArgs(args) {
+	const errors = Language.main.errors;
+	const values = await evalAll(args);
+	values.forEach((v, i) => {
+		if (v.type !== "int" && v.type !== "bool")
+			throw new CodeError(errors.RAT, [ args[i].start, args[i].end ], [ v.type ]);
+	});
+	const n = values.map(v => v.to("int").value);
+	const [ start, stop, step ] = n.length === 1 ? [ 0n, n[0], 1n ] : [ n[0], n[1], n[2] ?? 1n ];
+	if (step === 0n) throw new CodeError(errors.RS0, [ args[2].start, args[2].end ]);
+	return [ start, stop, step ];
+}
+
 class ForRange extends Statement { // for i in range(a, b, c)
 	constructor(keyword, target, args, block) {
 		super(keyword.position, block.end);
@@ -514,14 +588,7 @@ class ForRange extends Statement { // for i in range(a, b, c)
 	}
 	async execute() {
 		const errors = Language.main.errors;
-		const values = await evalAll(this.args);
-		values.forEach((v, i) => {
-			if (v.type !== "int" && v.type !== "bool")
-				throw new CodeError(errors.RAT, [ this.args[i].start, this.args[i].end ], [ v.type ]);
-		});
-		const n = values.map(v => v.to("int").value);
-		const [ start, stop, step ] = n.length === 1 ? [ 0n, n[0], 1n ] : [ n[0], n[1], n[2] ?? 1n ];
-		if (step === 0n) throw new CodeError(errors.RS0, [ this.args[2].start, this.args[2].end ]);
+		const [ start, stop, step ] = await evalRangeArgs(this.args);
 		let count = 0;
 		for (let i = start; step > 0n ? i < stop : i > stop; i += step) {
 			if (++count > MAX_LOOP_ITERATIONS)
@@ -536,20 +603,23 @@ class ForRange extends Statement { // for i in range(a, b, c)
 	}
 }
 
-class ForIn extends Statement { // for ch in "text"
+class ForIn extends Statement { // for x in "text" / for x in a_list
 	constructor(keyword, target, iterable, block) {
 		super(keyword.position, block.end);
 		this.target = target; this.iterable = iterable; this.block = block;
 	}
 	async execute() {
+		const errors = Language.main.errors;
 		const it = await this.iterable.execute();
-		if (it.type !== "str")
-			throw new CodeError(Language.main.errors.NIT, [ this.iterable.start, this.iterable.end ], [ it.type ]);
+		if (it.type !== "str" && it.type !== "list")
+			throw new CodeError(errors.NIT, [ this.iterable.start, this.iterable.end ], [ it.type ]);
+		const chars = it.type === "str" ? Array.from(it.value) : null;
 		let count = 0;
-		for (const ch of Array.from(it.value)) {
+		// lists are iterated live (like Python): items appended in the loop are visited too
+		for (let i = 0; i < (chars ? chars.length : it.value.length); i++) {
 			if (++count > MAX_LOOP_ITERATIONS)
-				throw new CodeError(Language.main.errors.MLI, [ this.start, this.iterable.end ]);
-			Environment.current.set(this.target, new Value(ch, "str"));
+				throw new CodeError(errors.MLI, [ this.start, this.iterable.end ]);
+			Environment.current.set(this.target, chars ? new Value(chars[i], "str") : it.value[i]);
 			try { await this.block.execute(); }
 			catch (e) {
 				if (e instanceof BreakException) break;
@@ -625,12 +695,14 @@ class InfixExpression extends Expression {
 		const r = await this.right.execute();
 		const rule = TypeRules.infix(op, l.type, r.type);
 		if (!rule) throw new CodeError(errors.UOB, this.operator, [ op, l.type, r.type ]);
-		if (rule.operand === null) { // str + str, str * int
-			if (op === "+") return new Value(l.value + r.value, "str");
-			const [ s, n ] = l.type === "str" ? [ l.value, r.value ] : [ r.value, l.value ];
+		if (rule.operand === null) { // str + str, list + list, str * int, list * int
+			if (op === "+")
+				return l.type === "list" ? new Value([ ...l.value, ...r.value ], "list") : new Value(l.value + r.value, "str");
+			const [ seq, n ] = l.type === "str" || l.type === "list" ? [ l.value, r.value ] : [ r.value, l.value ];
 			const count = Number(n);
-			if (count > 0 && s.length * count > 10_000_000) throw new CodeError(errors.OVF, this.operator);
-			return new Value(count > 0 ? s.repeat(count) : "", "str");
+			if (count > 0 && seq.length * count > 10_000_000) throw new CodeError(errors.OVF, this.operator);
+			if (typeof seq === "string") return new Value(count > 0 ? seq.repeat(count) : "", "str");
+			return new Value(Array.from({ length: Math.max(count, 0) }).flatMap(() => seq), "list");
 		}
 		const a = l.to(rule.operand).value, b = r.to(rule.operand).value;
 		const isInt = rule.operand === "int";
@@ -696,16 +768,16 @@ class Comparison extends Expression {
 		let a = l.value, b = r.value;
 		if (rule.operand) { a = l.to(rule.operand).value; b = r.to(rule.operand).value; }
 		switch (op) {
-			case "==": return rule.operand || l.type === r.type ? a === b : false;
-			case "!=": return !(rule.operand || l.type === r.type ? a === b : false);
+			case "==": return pyEq(l, r);
+			case "!=": return !pyEq(l, r);
 			case "is": return l.type === r.type && a === b;
 			case "is not": return !(l.type === r.type && a === b);
 			case "<": return a < b;
 			case ">": return a > b;
 			case "<=": return a <= b;
 			case ">=": return a >= b;
-			case "in": return b.includes(a);
-			case "not in": return !b.includes(a);
+			case "in": return r.type === "list" ? b.some(e => pyEq(e, l)) : b.includes(a);
+			case "not in": return !(r.type === "list" ? b.some(e => pyEq(e, l)) : b.includes(a));
 		}
 	}
 	async execute() {
@@ -792,7 +864,8 @@ class Call extends Expression {
 			return t === "any" ? a.value : a.to(t).value;
 		});
 		try {
-			return new Value(f.run(...converted) ?? null, f.ret);
+			const result = f.run(...converted);
+			return result instanceof Value ? result : new Value(result ?? null, f.ret);
 		} catch (e) {
 			if (e instanceof NativeError) throw new CodeError(errors[e.code], at, e.args);
 			throw e;
@@ -800,7 +873,7 @@ class Call extends Expression {
 	}
 }
 
-class Subscript extends Expression { // s[i], s[a:b:c]
+class Subscript extends Expression { // s[i], a[i][j], s[a:b:c]
 	constructor(left, index, slice, rbracket) {
 		super(left.start, rbracket.position + 1);
 		this.left = left; this.index = index; this.slice = slice; // slice: { start, stop, step }
@@ -830,23 +903,114 @@ class Subscript extends Expression { // s[i], s[a:b:c]
 		return Number(v.value);
 	}
 
+	/// position of the element for an index (negative ones count from the end)
+	async #position(length) {
+		const shown = await this.#integer(this.index);
+		const n = shown < 0 ? shown + length : shown;
+		if (n < 0 || n >= length)
+			throw new CodeError(Language.main.errors.IOB, [ this.index.start, this.index.end ], [ shown ]);
+		return n;
+	}
+
 	async execute() {
 		const errors = Language.main.errors;
 		const s = await this.left.execute();
-		if (s.type !== "str") throw new CodeError(errors.SNA, [ this.start, this.end ]);
-		const chars = Array.from(s.value);
+		if (s.type !== "str" && s.type !== "list") throw new CodeError(errors.SNA, [ this.start, this.end ]);
+		const items = s.type === "str" ? Array.from(s.value) : s.value;
 		if (this.slice) {
 			const start = await this.#integer(this.slice.start);
 			const stop = await this.#integer(this.slice.stop);
 			const step = await this.#integer(this.slice.step) ?? 1;
 			if (step === 0) throw new CodeError(errors.ZST, [ this.slice.step.start, this.slice.step.end ]);
-			return new Value(Subscript.indices(chars.length, start, stop, step).map(i => chars[i]).join(""), "str");
+			const picked = Subscript.indices(items.length, start, stop, step).map(i => items[i]);
+			return s.type === "str" ? new Value(picked.join(""), "str") : new Value(picked, "list");
 		}
-		let n = await this.#integer(this.index);
-		const shown = n;
-		if (n < 0) n += chars.length;
-		if (n < 0 || n >= chars.length)
-			throw new CodeError(errors.IOB, [ this.index.start, this.index.end ], [ shown ]);
-		return new Value(chars[n], "str");
+		const n = await this.#position(items.length);
+		return s.type === "str" ? new Value(items[n], "str") : items[n];
+	}
+
+	/// a[i] = value
+	async assign(value) {
+		const errors = Language.main.errors;
+		const s = await this.left.execute();
+		if (s.type === "str") throw new CodeError(errors.SIM, [ this.start, this.end ]);
+		if (s.type !== "list") throw new CodeError(errors.SNA, [ this.start, this.end ]);
+		s.value[await this.#position(s.value.length)] = value;
+		Environment.notify(s.value);
+	}
+}
+
+class ListLiteral extends Expression { // [1, 2, 3]
+	constructor(lbracket, items, rbracket) {
+		super(lbracket.position, rbracket.position + 1);
+		this.items = items;
+	}
+	async execute() { return new Value(await evalAll(this.items), "list"); }
+}
+
+class ListComprehension extends Expression { // [x * 2 for x in a if x > 0]
+	constructor(lbracket, element, target, iterable, condition, rbracket) {
+		super(lbracket.position, rbracket.position + 1);
+		this.element = element; this.target = target; this.iterable = iterable; this.condition = condition;
+	}
+	async execute() {
+		const it = await this.iterable.execute();
+		if (it.type !== "str" && it.type !== "list")
+			throw new CodeError(Language.main.errors.NIT, [ this.iterable.start, this.iterable.end ], [ it.type ]);
+		const items = it.type === "str" ? Array.from(it.value).map(c => new Value(c, "str")) : [ ...it.value ];
+		const outer = Environment.current, env = new Environment(outer); // the variable does not leak
+		Environment.current = env;
+		const out = [];
+		try {
+			for (const item of items) {
+				env.values.set(this.target.lexeme, item);
+				if (this.condition && !(await this.condition.execute()).truthy) continue;
+				out.push(await this.element.execute());
+			}
+		} finally { Environment.current = outer; }
+		return new Value(out, "list");
+	}
+}
+
+class RangeExpr extends Expression { // range(...) outside a for header builds a list
+	constructor(keyword, args, rpar) {
+		super(keyword.position, rpar.position + 1);
+		this.args = args;
+	}
+	async execute() {
+		const [ start, stop, step ] = await evalRangeArgs(this.args);
+		const size = step > 0n ? (stop - start + step - 1n) / step : (start - stop - step - 1n) / -step;
+		if (size > 1_000_000n) throw new CodeError(Language.main.errors.OVF, [ this.start, this.end ]);
+		const out = [];
+		for (let i = start; step > 0n ? i < stop : i > stop; i += step) out.push(new Value(i, "int"));
+		return new Value(out, "list");
+	}
+}
+
+class MethodCall extends Expression { // a.append(x), s.upper()
+	constructor(object, name, rpar, args) {
+		super(object.start, rpar.position + 1);
+		this.object = object; this.name = name; this.args = args;
+	}
+	async execute() {
+		const errors = Language.main.errors, at = [ this.start, this.end ], name = this.name.lexeme;
+		const self = await this.object.execute();
+		const set = Library.methods(self.type)?.[name];
+		if (!set) throw new CodeError(errors.UMT, this.name, [ self.type, name ]);
+		const args = await evalAll(this.args);
+		const f = TypeRules.pick(set, args.map(a => a.type));
+		if (!f) throw new CodeError(errors.FNF, at, [ name ]);
+		const converted = args.map((a, i) => {
+			const t = TypeRules.paramType(f, i);
+			return t === "any" ? a.value : a.to(t).value;
+		});
+		let result;
+		try { result = f.run(self.value, ...converted); }
+		catch (e) {
+			if (e instanceof NativeError) throw new CodeError(errors[e.code], at, e.args);
+			throw e;
+		}
+		if (f.mutates) Environment.notify(self.value);
+		return result instanceof Value ? result : new Value(result ?? null, f.ret);
 	}
 }

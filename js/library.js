@@ -7,6 +7,20 @@ function roundHalfEven(x) {
 	return Math.abs(x % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r;
 }
 
+/// min()/max() of a list: returns the element itself
+function extreme(list, better) {
+	if (list.length === 0) throw new NativeError("EML");
+	let best = list[0];
+	for (const e of list.slice(1)) {
+		const rule = TypeRules.compare("<", best.type, e.type);
+		if (!rule) throw new NativeError("UOB", [ "<", best.type, e.type ]);
+		const x = rule.operand ? best.to(rule.operand).value : best.value;
+		const y = rule.operand ? e.to(rule.operand).value : e.value;
+		if (better(y, x)) best = e;
+	}
+	return best;
+}
+
 function toBigInt(x) {
 	if (!Number.isFinite(x)) throw new NativeError("OVF");
 	return BigInt(x);
@@ -19,11 +33,13 @@ Library.register("", {
 	],
 	min: [
 		{ args: [ "int", "int" ], rest: "int", ret: "int", run: (...v) => v.reduce((a, b) => b < a ? b : a) },
-		{ args: [ "float", "float" ], rest: "float", ret: "float", run: Math.min }
+		{ args: [ "float", "float" ], rest: "float", ret: "float", run: Math.min },
+		{ args: [ "list" ], ret: "value", run: a => extreme(a, (x, y) => x < y) }
 	],
 	max: [
 		{ args: [ "int", "int" ], rest: "int", ret: "int", run: (...v) => v.reduce((a, b) => b > a ? b : a) },
-		{ args: [ "float", "float" ], rest: "float", ret: "float", run: Math.max }
+		{ args: [ "float", "float" ], rest: "float", ret: "float", run: Math.max },
+		{ args: [ "list" ], ret: "value", run: a => extreme(a, (x, y) => x > y) }
 	],
 	round: [
 		{ args: [ "int" ], ret: "int", run: x => x },
@@ -58,7 +74,26 @@ Library.register("", {
 	],
 	str: [ { args: [ "any" ], ret: "str", run: v => pyStr(v) } ],
 	bool: [ { args: [ "any" ], ret: "bool", run: v => isTruthy(v) } ],
-	len: [ { args: [ "str" ], ret: "int", run: s => BigInt(Array.from(s).length) } ],
+	len: [
+		{ args: [ "str" ], ret: "int", run: s => BigInt(Array.from(s).length) },
+		{ args: [ "list" ], ret: "int", run: a => BigInt(a.length) }
+	],
+	list: [
+		{ args: [], ret: "list", run: () => [] },
+		{ args: [ "str" ], ret: "list", run: s => Array.from(s).map(c => new Value(c, "str")) },
+		{ args: [ "list" ], ret: "list", run: a => [ ...a ] }
+	],
+	sum: [ { args: [ "list" ], ret: "value", run: a => {
+		let isFloat = false, whole = 0n, real = 0;
+		for (const e of a) {
+			if (e.type === "float") isFloat = true;
+			else if (e.type !== "int" && e.type !== "bool") throw new NativeError("SUM");
+			real += Number(e.value);
+			if (e.type !== "float") whole += BigInt(e.value);
+		}
+		return new Value(isFloat ? real : whole);
+	} } ],
+	sorted: [ { args: [ "list" ], ret: "list", run: a => sortValues([ ...a ]) } ],
 	ord: [ { args: [ "str" ], ret: "int", run: s => {
 		if (Array.from(s).length !== 1) throw new NativeError("ORC");
 		return BigInt(s.codePointAt(0));
@@ -128,4 +163,68 @@ Library.register("random", {
 		if (b < a) throw new NativeError("RRG");
 		return a + BigInt(Math.floor(Math.random() * Number(b - a + 1n)));
 	} } ]
+});
+
+// ==== List methods ===========================================================
+// run(self, ...args): "self" is the raw array of Values. "mutates" redraws the debug view.
+
+const listIndex = (a, i) => {
+	const n = i < 0n ? i + BigInt(a.length) : i;
+	if (n < 0n || n >= BigInt(a.length)) throw new NativeError("IOB", [ i.toString() ]);
+	return Number(n);
+};
+
+Library.registerMethods("list", {
+	append: [ { args: [ "any" ], ret: "None", mutates: true, run: (a, x) => { a.push(new Value(x)); } } ],
+	extend: [ { args: [ "list" ], ret: "None", mutates: true, run: (a, b) => { a.push(...b); } } ],
+	insert: [ { args: [ "int", "any" ], ret: "None", mutates: true, run: (a, i, x) => {
+		const n = Number(i < 0n ? i + BigInt(a.length) : i);
+		a.splice(Math.max(0, Math.min(n, a.length)), 0, new Value(x));
+	} } ],
+	pop: [
+		{ args: [], ret: "value", mutates: true, run: a => { if (!a.length) throw new NativeError("EML"); return a.pop(); } },
+		{ args: [ "int" ], ret: "value", mutates: true, run: (a, i) => a.splice(listIndex(a, i), 1)[0] }
+	],
+	remove: [ { args: [ "any" ], ret: "None", mutates: true, run: (a, x) => {
+		const i = a.findIndex(e => pyEq(e, new Value(x)));
+		if (i < 0) throw new NativeError("VNF");
+		a.splice(i, 1);
+	} } ],
+	index: [ { args: [ "any" ], ret: "int", run: (a, x) => {
+		const i = a.findIndex(e => pyEq(e, new Value(x)));
+		if (i < 0) throw new NativeError("VNF");
+		return BigInt(i);
+	} } ],
+	count: [ { args: [ "any" ], ret: "int", run: (a, x) => BigInt(a.filter(e => pyEq(e, new Value(x))).length) } ],
+	sort: [ { args: [], ret: "None", mutates: true, run: a => { sortValues(a); } } ],
+	reverse: [ { args: [], ret: "None", mutates: true, run: a => { a.reverse(); } } ],
+	clear: [ { args: [], ret: "None", mutates: true, run: a => { a.length = 0; } } ],
+	copy: [ { args: [], ret: "list", run: a => [ ...a ] } ]
+});
+
+// ==== String methods =========================================================
+
+Library.registerMethods("str", {
+	upper: [ { args: [], ret: "str", run: s => s.toUpperCase() } ],
+	lower: [ { args: [], ret: "str", run: s => s.toLowerCase() } ],
+	capitalize: [ { args: [], ret: "str", run: s => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() } ],
+	strip: [ { args: [], ret: "str", run: s => s.trim() } ],
+	split: [
+		{ args: [], ret: "list", run: s => (s.trim() === "" ? [] : s.trim().split(/\s+/)).map(x => new Value(x, "str")) },
+		{ args: [ "str" ], ret: "list", run: (s, sep) => {
+			if (sep === "") throw new NativeError("ESP");
+			return s.split(sep).map(x => new Value(x, "str"));
+		} }
+	],
+	join: [ { args: [ "list" ], ret: "str", run: (s, a) => {
+		if (a.some(e => e.type !== "str")) throw new NativeError("JNS");
+		return a.map(e => e.value).join(s);
+	} } ],
+	replace: [ { args: [ "str", "str" ], ret: "str", run: (s, a, b) => s.split(a).join(b) } ],
+	find: [ { args: [ "str" ], ret: "int", run: (s, x) => BigInt(s.indexOf(x)) } ],
+	count: [ { args: [ "str" ], ret: "int", run: (s, x) => x === "" ? BigInt(s.length + 1) : BigInt(s.split(x).length - 1) } ],
+	startswith: [ { args: [ "str" ], ret: "bool", run: (s, x) => s.startsWith(x) } ],
+	endswith: [ { args: [ "str" ], ret: "bool", run: (s, x) => s.endsWith(x) } ],
+	isdigit: [ { args: [], ret: "bool", run: s => /^\d+$/.test(s) } ],
+	isalpha: [ { args: [], ret: "bool", run: s => /^\p{L}+$/u.test(s) } ]
 });

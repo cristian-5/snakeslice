@@ -33,6 +33,14 @@ class Parser {
 		CodeError.code = this.code = code.replace(/\r/g, "");
 		this.tokens = this.#lex();
 		this.current = 0;
+		// names usable as modules (math.sqrt): "import math [as m]", found before parsing
+		this.modules = new Set();
+		this.tokens.forEach((t, i) => {
+			if (t.type !== "keyword" || t.lexeme !== "import") return;
+			const module = this.tokens[i + 1], as = this.tokens[i + 2], alias = this.tokens[i + 3];
+			if (module?.type !== "identifier") return;
+			this.modules.add(as?.lexeme === "as" && alias?.type === "identifier" ? alias.lexeme : module.lexeme);
+		});
 	}
 
 	async parse() {
@@ -57,7 +65,7 @@ class Parser {
 					i++;
 				}
 				if (i >= to) break;
-				if (code[i] === '\n') { i++; continue; } // blank line
+				if (code[i] === '\n') { i++; continue; }                                 // blank line
 				if (code[i] === '#') { while (i < to && code[i] !== '\n') i++; continue; } // comment line
 				lineStart = false;
 				const top = indents[indents.length - 1];
@@ -338,17 +346,10 @@ class Parser {
 		const target = this.#consume("identifier");
 		this.#consume("keyword", "in");
 		if (this.#check("keyword", "range")) {
-			this.#advance();
-			const lpar = this.#consume("operator", "(");
-			const args = [];
-			if (!this.#check("operator", ")")) do {
-				if (this.#check("operator", ")")) break;
-				args.push(this.#expression());
-			} while (this.#match("operator", ","));
-			const rpar = this.#consume("operator", ")");
-			if (args.length < 1 || args.length > 3)
-				this.#fail("RNA", [ lpar.position, rpar.position + 1 ], [ args.length ]);
-			return new ForRange(keyword, target, args, this.#suite());
+			const saved = this.current;
+			const range = this.#range();
+			if (this.#check("operator", ":")) return new ForRange(keyword, target, range.args, this.#suite());
+			this.current = saved; // something like range(5)[::-1]: a normal expression
 		}
 		const iterable = this.#expression();
 		return new ForIn(keyword, target, iterable, this.#suite());
@@ -435,8 +436,7 @@ class Parser {
 	}
 
 	#checkTarget(e) {
-		if (this.#isTarget(e)) return;
-		if (e instanceof Subscript) this.#fail("SIM", [ e.start, e.end ]);
+		if (this.#isTarget(e) || (e instanceof Subscript && !e.slice)) return;
 		this.#fail("IAT", [ e.start, e.end ]);
 	}
 
@@ -554,14 +554,7 @@ class Parser {
 		let e = this.#primary();
 		for (;;) {
 			if (this.#match("operator", "(")) {
-				const args = [];
-				if (!this.#check("operator", ")")) do {
-					if (this.#check("operator", ")")) break;
-					const next = this.tokens[this.current + 1];
-					if (this.#check("identifier") && next && next.type === "operator" && next.lexeme === "=")
-						this.#fail("KWA", this.#peek());
-					args.push(this.#expression());
-				} while (this.#match("operator", ","));
+				const args = this.#arguments();
 				e = new Call(e, this.#consume("operator", ")"), args);
 			} else if (this.#match("operator", "[")) {
 				let start = null, stop = null, step = null, isSlice = false;
@@ -573,6 +566,12 @@ class Parser {
 				}
 				const rbracket = this.#consume("operator", "]");
 				e = new Subscript(e, isSlice ? null : start, isSlice ? { start, stop, step } : null, rbracket);
+			} else if (this.#match("operator", ".")) {
+				const name = this.#consume("identifier");
+				if (!this.#check("operator", "(")) this.#fail("ATT", name, [ name.lexeme ]);
+				this.#advance();
+				const args = this.#arguments();
+				e = new MethodCall(e, name, this.#consume("operator", ")"), args);
 			} else break;
 		}
 		return e;
@@ -589,7 +588,8 @@ class Parser {
 			case "fstring": return this.#fstring(this.#advance());
 			case "identifier": {
 				const parts = [ this.#advance() ];
-				while (this.#match("operator", ".")) parts.push(this.#consume("identifier"));
+				if (this.modules.has(parts[0].lexeme)) // math.sqrt, math.pi
+					while (this.#match("operator", ".")) parts.push(this.#consume("identifier"));
 				return new Identifier(this.#qualify(parts));
 			}
 			case "keyword":
@@ -603,10 +603,10 @@ class Parser {
 						return new Input(keyword, prompt, this.#consume("operator", ")"));
 					}
 					case "print": this.#fail("PRS", t);
-					case "range": this.#fail("RNG", t);
+					case "range": return this.#range();
 				}
 				if (unsupported.includes(t.lexeme)) this.#fail("USK", t, [ t.lexeme ]);
-			break;
+				break;
 			case "operator":
 				if (t.lexeme === "(") {
 					this.#advance();
@@ -614,10 +614,53 @@ class Parser {
 					this.#consume("operator", ")");
 					return e;
 				}
-				if (t.lexeme === "[" || t.lexeme === "{") this.#fail("USK", t, [ t.lexeme ]);
-			break;
+				if (t.lexeme === "[") return this.#list();
+				if (t.lexeme === "{") this.#fail("USK", t, [ t.lexeme ]);
 		}
 		this.#fail("UEX", t);
+	}
+
+	/// call arguments after the "(" (stops before the ")")
+	#arguments() {
+		const args = [];
+		if (!this.#check("operator", ")")) do {
+			if (this.#check("operator", ")")) break;
+			const next = this.tokens[this.current + 1];
+			if (this.#check("identifier") && next && next.type === "operator" && next.lexeme === "=")
+				this.#fail("KWA", this.#peek());
+			args.push(this.#expression());
+		} while (this.#match("operator", ","));
+		return args;
+	}
+
+	#range() {
+		const keyword = this.#advance();
+		const lpar = this.#consume("operator", "(");
+		const args = this.#arguments();
+		const rpar = this.#consume("operator", ")");
+		if (args.length < 1 || args.length > 3)
+			this.#fail("RNA", [ lpar.position, rpar.position + 1 ], [ args.length ]);
+		return new RangeExpr(keyword, args, rpar);
+	}
+
+	/// [1, 2, 3]  or  [x * 2 for x in items if x > 0]
+	#list() {
+		const lbracket = this.#advance();
+		if (this.#check("operator", "]")) return new ListLiteral(lbracket, [], this.#advance());
+		const first = this.#expression();
+		if (this.#match("keyword", "for")) {
+			const target = this.#consume("identifier");
+			this.#consume("keyword", "in");
+			const iterable = this.#or();
+			const condition = this.#match("keyword", "if") ? this.#or() : null;
+			return new ListComprehension(lbracket, first, target, iterable, condition, this.#consume("operator", "]"));
+		}
+		const items = [ first ];
+		while (this.#match("operator", ",")) {
+			if (this.#check("operator", "]")) break;
+			items.push(this.#expression());
+		}
+		return new ListLiteral(lbracket, items, this.#consume("operator", "]"));
 	}
 
 	#fstring(token) {

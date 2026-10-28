@@ -46,11 +46,14 @@ class TypeRules {
 		switch (op) {
 			case "+":
 				if (l === "str" && r === "str") return { type: "str", operand: null };
+				if (l === "list" && r === "list") return { type: "list", operand: null };
 				return num ? { type: c, operand: c } : null;
 			case "-": return num ? { type: c, operand: c } : null;
 			case "*":
 				if ((l === "str" && TypeRules.isIntegral(r)) || (TypeRules.isIntegral(l) && r === "str"))
 					return { type: "str", operand: null };
+				if ((l === "list" && TypeRules.isIntegral(r)) || (TypeRules.isIntegral(l) && r === "list"))
+					return { type: "list", operand: null };
 				return num ? { type: c, operand: c } : null;
 			case "/": return num ? { type: "float", operand: "float" } : null;
 			case "//": case "%": return num ? { type: c, operand: c } : null;
@@ -70,7 +73,7 @@ class TypeRules {
 			case "<": case ">": case "<=": case ">=":
 				if (num) return { operand: TypeRules.common(l, r) };
 				return l === "str" && r === "str" ? { operand: null } : null;
-			case "in": case "not in": return l === "str" && r === "str" ? { operand: null } : null;
+			case "in": case "not in": return (l === "str" && r === "str") || r === "list" ? { operand: null } : null;
 		}
 		return null;
 	}
@@ -141,6 +144,8 @@ class SymbolScope {
 
 	_namespace(name) { return this.namespaces.get(name) ?? this.parent?._namespace(name); }
 
+	has(name) { return this._owner(name) !== undefined; }
+
 	findNamespace(tokens) {
 		const errors = Language.main.errors;
 		let ns;
@@ -188,8 +193,9 @@ function walk(statements, visit) {
 
 /// Name tokens bound by a statement
 function boundNames(s) {
-	if (s instanceof Assignment || s instanceof MultiAssignment) return s.targets.map(t => t.name);
-	if (s instanceof AugAssignment) return [ s.target.name ];
+	if (s instanceof Assignment || s instanceof MultiAssignment)
+		return s.targets.filter(t => t instanceof Identifier).map(t => t.name);
+	if (s instanceof AugAssignment) return s.target instanceof Identifier ? [ s.target.name ] : [];
 	if (s instanceof ForRange || s instanceof ForIn) return [ s.target ];
 	if (s instanceof FunctionDefinition) return [ s.name ];
 	return [];
@@ -298,9 +304,19 @@ class TypeChecker {
 		this.#bodies.push(node);
 	}
 
-	visitAssignment(node) { node.value.accept(this); }
-	visitMultiAssignment(node) { for (const v of node.values) v.accept(this); }
-	visitAugAssignment(node) { node.value.accept(this); }
+	/// a[i] = x: the list and the index must be valid; strings are immutable
+	#target(t) {
+		if (!(t instanceof Subscript)) return;
+		const type = t.left.accept(this);
+		if (type === "str") this.#fail("SIM", [ t.start, t.end ]);
+		if (type !== null && type !== "list") this.#fail("SNA", [ t.start, t.end ]);
+		const it = t.index.accept(this);
+		if (it !== null && !TypeRules.isIntegral(it)) this.#fail("IST", [ t.index.start, t.index.end ], [ it ]);
+	}
+
+	visitAssignment(node) { node.value.accept(this); node.targets.forEach(t => this.#target(t)); }
+	visitMultiAssignment(node) { for (const v of node.values) v.accept(this); node.targets.forEach(t => this.#target(t)); }
+	visitAugAssignment(node) { this.#target(node.target); node.value.accept(this); }
 
 	visitPrint(node) {
 		for (const a of node.args) a.accept(this);
@@ -334,7 +350,7 @@ class TypeChecker {
 
 	visitForIn(node) {
 		const t = node.iterable.accept(this);
-		if (t !== null && t !== "str") this.#fail("NIT", [ node.iterable.start, node.iterable.end ], [ t ]);
+		if (t !== null && t !== "str" && t !== "list") this.#fail("NIT", [ node.iterable.start, node.iterable.end ], [ t ]);
 		this.#loops++;
 		try { node.block.accept(this); } finally { this.#loops--; }
 	}
@@ -397,14 +413,61 @@ class TypeChecker {
 
 	visitSubscript(node) {
 		const t = node.left.accept(this);
-		if (t !== null && t !== "str") this.#fail("SNA", [ node.start, node.end ]);
+		if (t !== null && t !== "str" && t !== "list") this.#fail("SNA", [ node.start, node.end ]);
 		const parts = node.slice ? [ node.slice.start, node.slice.stop, node.slice.step ] : [ node.index ];
 		for (const p of parts) {
 			if (!p) continue;
 			const pt = p.accept(this);
 			if (pt !== null && !TypeRules.isIntegral(pt)) this.#fail("IST", [ p.start, p.end ], [ pt ]);
 		}
-		return node.valueType = "str";
+		return node.valueType = node.slice ? t : t === "str" ? "str" : null;
+	}
+
+	visitListLiteral(node) {
+		for (const i of node.items) i.accept(this);
+		return node.valueType = "list";
+	}
+
+	visitListComprehension(node) {
+		const t = node.iterable.accept(this);
+		if (t !== null && t !== "str" && t !== "list") this.#fail("NIT", [ node.iterable.start, node.iterable.end ], [ t ]);
+		const outer = this.#scope;
+		this.#scope = new SymbolScope(outer);
+		this.#scope.values.set(node.target.lexeme, new VarInfo(t === "str" ? "str" : null));
+		try {
+			node.element.accept(this);
+			if (node.condition) node.condition.accept(this);
+		} finally { this.#scope = outer; }
+		return node.valueType = "list";
+	}
+
+	visitRangeExpr(node) {
+		for (const a of node.args) {
+			const t = a.accept(this);
+			if (t !== null && !TypeRules.isIntegral(t)) this.#fail("RAT", [ a.start, a.end ], [ t ]);
+		}
+		return node.valueType = "list";
+	}
+
+	visitMethodCall(node) {
+		const name = node.name.lexeme;
+		const o = node.object;
+		if (o instanceof Identifier && !o.name.qualifiers && Library.has(o.name.lexeme) && !this.#scope.has(o.name.lexeme))
+			this.#fail("UNS", o.name, [ o.name.lexeme, o.name.lexeme ]);
+		const type = o.accept(this);
+		const types = node.args.map(a => a.accept(this));
+		const tables = type === null ? [ "str", "list" ].map(t => Library.methods(t)) : [ Library.methods(type) ];
+		const overloads = tables.flatMap(t => t?.[name] ?? []);
+		if (overloads.length === 0) this.#fail("UMT", node.name, [ type ?? "str/list", name ]);
+		const candidates = overloads.filter(f => TypeRules.arityOk(f, types.length));
+		if (candidates.length === 0) this.#fail("FNF", [ node.start, node.end ], [ name ]);
+		if (type !== null && types.every(t => t !== null)) {
+			const f = TypeRules.pick(overloads, types);
+			if (!f) this.#fail("FNF", [ node.start, node.end ], [ name ]);
+			return node.valueType = f.ret === "value" ? null : f.ret;
+		}
+		const returns = new Set(candidates.map(f => f.ret === "value" ? null : f.ret));
+		return node.valueType = returns.size === 1 ? [ ...returns ][0] : null;
 	}
 
 	visitCall(node) {
@@ -424,9 +487,9 @@ class TypeChecker {
 			if (types.every(t => t !== null)) {
 				const f = TypeRules.pick(info.overloads, types);
 				if (!f) this.#fail("FNF", [ node.start, node.end ], [ token.lexeme ]);
-				return node.valueType = f.ret;
+				return node.valueType = f.ret === "value" ? null : f.ret;
 			}
-			const returns = new Set(candidates.map(f => f.ret));
+			const returns = new Set(candidates.map(f => f.ret === "value" ? null : f.ret));
 			return node.valueType = returns.size === 1 ? [ ...returns ][0] : null;
 		}
 		if (info instanceof VarInfo && !info.canBeFunction) this.#fail("NAF", token, [ token.lexeme ]);
