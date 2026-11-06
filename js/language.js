@@ -73,7 +73,9 @@ class Language {
 			},
 			saveMessage: "🐍 Snake SL/CE automatically saves your changes!",
 			loveMessage: "Made with ❤️ by <b>Prof. Cristian Antonuccio</b>",
-			noErrors: "✅ The code is valid, no errors found!"
+			noErrors: "✅ The code is valid, no errors found!",
+			saveFile: "Save as:",
+			saveName: "code.py",
 		},
 		"IT": {
 			errors: {
@@ -146,7 +148,9 @@ class Language {
 			},
 			saveMessage: "🐍 Snake SL/CE salva automaticamente le modifiche!",
 			loveMessage: "Fatto con ❤️ dal <b>Prof. Cristian Antonuccio</b>",
-			noErrors: "✅ Nessun errore trovato, il codice è valido!"
+			noErrors: "✅ Nessun errore trovato, il codice è valido!",
+			saveFile: "Salva con nome:",
+			saveName: "codice.py",
 		},
 	};
 

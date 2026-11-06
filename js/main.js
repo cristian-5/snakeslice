@@ -128,10 +128,6 @@ Environment.on_define = Environment.on_change = async (id, data) => {
 	else debug.innerHTML += variableHTML(id, data);
 };
 
-function madeWithLove() {
-	vanillaToast.show(Language.main.loveMessage, { duration: 3000, fadeDuration: 500 });
-}
-
 function escaped(s) {
 	return s.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")

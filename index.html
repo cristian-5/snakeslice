@@ -44,6 +44,7 @@
 	<nav>
 		<h1>🐍 Snake SL<span style="color:#6e6e6e;">/</span>CE Python Interpreter<sup style="color:#2222f5;margin:0 5px">beta</sup></h1>
 		<div class="cassette">
+			<button onclick="save()" id="save"><i class="fa-solid fa-download blue"></i></button>
 			<button onclick="compile('client')" id="compile"><i class="fa-solid fa-file-circle-check gray"></i></button>
 			<button onclick="run()" id="run"><i class="fa-solid fa-play green" style="margin:0 8px 0 0"></i> <span id="run-text">Run</span></button>
 		</div>
@@ -59,16 +60,35 @@
 					const $ = id => document.getElementById(id);
 					switch (Language.current) {
 						case "IT":
+							$("save").title = "Salva";
 							$("compile").title = "Verifica";
-							$("run").title = $("run-text").innerText = "Esegui";
+							$("run-text").innerText = "Esegui";
 						break;
 						case "EN":
+							$("save").title = "Save";
 							$("compile").title = "Verify";
-							$("run").title = $("run-text").innerText = "Run";
+							$("run-text").innerText = "Run";
 						break;
 					}
 				}
 				updateLanguage();
+				function save() {
+					let name = prompt(Language.main.saveFile, Language.main.saveName);
+					if (!name.endsWith(".py")) name += ".py";
+					const code = editor.getValue();
+					const blob = new Blob([code], { type: "text/plain" });
+					const url = URL.createObjectURL(blob);
+					const a = document.createElement("a");
+					a.href = url;
+					a.download = name;
+					document.body.appendChild(a);
+					a.click();
+					document.body.removeChild(a);
+					URL.revokeObjectURL(url);
+				}
+				function madeWithLove() {
+					vanillaToast.show(Language.main.loveMessage, { duration: 3000, fadeDuration: 500 });
+				}
 			</script>
 			<button onclick="madeWithLove()"><i class="fa-solid fa-heart red"></i></button>
 		</div>
