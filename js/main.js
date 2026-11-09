@@ -45,7 +45,7 @@ async function compile(sender = null) {
 async function run() {
 	await compile("server");
 	terminal.reset();
-	document.getElementById("debug").innerHTML = ""; // clear debug view
+	resetDebugView();
 	if (!AST) return;
 	try { await AST.execute(); } catch (e) {
 		if (!(e instanceof CodeError)) {
@@ -69,9 +69,64 @@ Input.prompt = async () => {
 	return data;
 };
 
-// ==== Debug view: global variables ==========================================
-// Python variables have no declared type: the whole box is redrawn whenever
-// the value (and possibly its type) changes.
+// ==== Debug view =============================================================
+//
+// Global variables sit directly in the view. Every function call and every list
+// comprehension is a scope: it is drawn as a dashed box that holds its variables and,
+// nested inside, the scopes opened from it. Python has no block scopes, so `if`, `for`
+// and `while` do not get a box. A function call is nested where the function was
+// *defined* (the globals), not in its caller, because that is all it can see: a
+// recursive function shows one box per call, side by side, in the order of the calls.
+//
+// The interpreter reports what happens through the Environment hooks below. They only
+// update a small model: while the program runs the browser cannot paint anyway (it
+// gets control back when the program waits at `input()` and when it ends), so the model
+// is drawn once, then, instead of touching the DOM on every iteration of a loop. That
+// is also why a scope is visible while the program is waiting at `input()` or stopped
+// by an error, and is gone once its call has returned.
+//
+// Python variables have no declared type: the whole box is redrawn whenever the value
+// (and possibly its type) changes.
+
+const debugModel = { items: [] };  // top level: variables and scopes, in order of creation
+const scopeNodes = new Map();      // env.uid -> scope { label, items, parent, keys }
+const variableItems = new Map();   // "uid/id" -> variable { id, data }
+let renderTimer = null;
+
+function resetDebugView() {
+	debugModel.items = [];
+	scopeNodes.clear();
+	variableItems.clear();
+	renderDebugView();
+}
+
+function scheduleRender() {
+	if (renderTimer === null) renderTimer = setTimeout(renderDebugView, 0);
+}
+
+function renderDebugView() {
+	clearTimeout(renderTimer);
+	renderTimer = null;
+	document.getElementById("debug").innerHTML = itemsHTML(debugModel.items);
+}
+
+/// The list a variable (or a scope) of `env` goes in. It is undefined for an environment
+/// the view knows nothing about (e.g. one left over from a previous run).
+function itemsOf(env) {
+	return env === Environment.global ? debugModel.items : scopeNodes.get(env.uid)?.items;
+}
+
+function itemsHTML(items) {
+	let result = "";
+	for (const item of items) {
+		if (item.items && item.items.length === 0) continue; // don't show empty scopes
+		result += item.items ? `<div class="scope">
+			<div class="scope-label">${escaped(item.label)}</div>
+			<div class="scope-content">${itemsHTML(item.items)}</div>
+		</div>` : variableHTML(item.id, item.data);
+	}
+	return result;
+}
 
 // CSS class (colour) of a Python type
 const cssOf = { int: "int", float: "float", bool: "bool", str: "string", None: "none", list: "list" };
@@ -110,8 +165,9 @@ function variableHTML(id, data) {
 		return `
 		<div class="variable ${cssOf[base]}"><table class="array" data-id="${id}">
 			<tr><th colspan="${cols}"><span class="type">${base}</span> <b>${id}</b>[${rows.length}][${cols}]</th></tr>
-			${rows.map((r, i) => `<tr>${r.value.map((e, j) =>
-				`<td title="[${i}][${j}]">${cellHTML(e)}</td>`).join('')}</tr>`).join('')}
+			${rows.map((r, i) => `<tr>${r.value.length ? r.value.map((e, j) =>
+				`<td title="[${i}][${j}]">${cellHTML(e)}</td>`).join('') :
+				`<td class="empty" colspan="${cols}" title="[${i}]">[]</td>`}</tr>`).join('')}
 		</table></div>`;
 	}
 	return `
@@ -121,12 +177,45 @@ function variableHTML(id, data) {
 	</table></div>`;
 }
 
-Environment.on_define = Environment.on_change = async (id, data) => {
-	const debug = document.getElementById("debug");
-	const existing = debug.querySelector(`table[data-id="${id}"]`);
-	if (existing) existing.closest(".variable").outerHTML = variableHTML(id, data);
-	else debug.innerHTML += variableHTML(id, data);
+Environment.on_open = env => {
+	const parent = itemsOf(env.parent);
+	if (!parent) return;
+	const node = { label: env.label, items: [], parent, keys: [] };
+	parent.push(node);
+	scopeNodes.set(env.uid, node);
+	scheduleRender();
 };
+
+Environment.on_close = env => {
+	const node = scopeNodes.get(env.uid);
+	if (!node) return;
+	const i = node.parent.lastIndexOf(node); // (it is almost always the last)
+	if (i >= 0) node.parent.splice(i, 1);
+	for (const key of node.keys) variableItems.delete(key);
+	scopeNodes.delete(env.uid);
+	scheduleRender();
+};
+
+Environment.on_define = (env, id, data) => {
+	const items = itemsOf(env);
+	if (!items) return;
+	const item = { id, data }, key = `${env.uid}/${id}`;
+	items.push(item);
+	variableItems.set(key, item);
+	scopeNodes.get(env.uid)?.keys.push(key);
+	scheduleRender();
+};
+
+Environment.on_change = (env, id, data) => {
+	const item = variableItems.get(`${env.uid}/${id}`);
+	if (!item) return;
+	item.data = data;
+	scheduleRender();
+};
+
+// A list was modified in place. The variables hold the very same list, so it is enough
+// to draw them again.
+Environment.on_mutate = () => scheduleRender();
 
 function escaped(s) {
 	return s.replace(/&/g, "&amp;")

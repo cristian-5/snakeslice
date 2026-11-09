@@ -262,7 +262,7 @@ class ReturnException { constructor(value, statement) { this.value = value; this
 
 // ==== Environment ============================================================
 // builtins <- global <- function. Python has no block scope: only the global
-// scope and one scope per function call.
+// scope, one scope per function call and one per list comprehension.
 
 class Environment {
 
@@ -271,9 +271,18 @@ class Environment {
 	static builtins = undefined;
 	static modules = new Map();
 
-	// Only variables of the global scope are notified.
-	static on_define = async (id, data) => {};
-	static on_change = async (id, data) => {};
+	// Hooks of the debug view. "env" is the Environment owning the variable and "id" its
+	// name. Python has no block scope: the only scopes are the function calls and the
+	// list comprehensions. Each one is announced with on_open / on_close ("label" says
+	// what it is). Variables of the global scope are notified too, with env === global.
+	// on_mutate: a list was modified in place (append, a[i] = x...).
+	static on_open = env => {};
+	static on_close = env => {};
+	static on_define = (env, id, data) => {};
+	static on_change = (env, id, data) => {};
+	static on_mutate = list => {};
+
+	static #count = 0; // gives every environment its own uid
 
 	static create() {
 		Environment.modules = new Map();
@@ -305,21 +314,32 @@ class Environment {
 
 	static key(token) { return token.qualifiers ? token.member : token.lexeme; }
 
-	/// A list was modified in place: redraw every global variable that contains it.
-	static notify(list) {
-		if (!Environment.global) return;
-		for (const [ name, v ] of Environment.global.values)
-			if (v instanceof Value && v.type === "list" && Environment.#contains(v.value, list))
-				Environment.on_change(name, v);
+	/// Runs `body` in a new scope (a function call, a comprehension) and closes it
+	/// afterwards. The scope sees the names of `parent`: the enclosing scope, or the
+	/// place where a function was defined (not its caller). The scope is shown in the
+	/// debug view while it is open. If a CodeError stops the program it is left there,
+	/// so that the state at the moment of the error can be inspected.
+	static async scoped(label, body, parent = Environment.current) {
+		const outer = Environment.current;
+		const env = new Environment(parent, label);
+		Environment.current = env;
+		Environment.on_open(env);
+		let failed = false;
+		try { return await body(env); }
+		catch (e) { failed = e instanceof CodeError; throw e; }
+		finally {
+			Environment.current = outer;
+			if (!failed) Environment.on_close(env);
+		}
 	}
 
-	static #contains(arr, target, depth = 0) {
-		if (arr === target) return true;
-		if (depth > 20) return false;
-		return arr.some(e => e.type === "list" && Environment.#contains(e.value, target, depth + 1));
-	}
+	/// A list was modified in place: the debug view has to redraw the variables holding it.
+	static notify(list) { Environment.on_mutate(list); }
 
-	constructor(parent) {
+	/// The `label` only for scopes (shown in the debug view).
+	constructor(parent, label = "") {
+		this.uid = Environment.#count++;
+		this.label = label;
 		this.parent = parent;
 		this.values = new Map();
 		this.namespaces = new Map(); // import math [as m]
@@ -368,13 +388,17 @@ class Environment {
 
 	get(token) { return this.#resolve(token).values.get(Environment.key(token)); }
 
+	/// Creates or rebinds a variable of this very scope and tells the debug view.
+	define(name, value) {
+		const had = this.values.get(name);
+		this.values.set(name, value);
+		if (value instanceof Value) // (functions are not shown)
+			(had instanceof Value ? Environment.on_change : Environment.on_define)(this, name, value);
+	}
+
 	set(token, value) {
 		const name = token.lexeme;
-		const target = this.globalNames?.has(name) ? Environment.global : this;
-		const had = target.values.get(name);
-		target.values.set(name, value);
-		if (target === Environment.global && value instanceof Value)
-			(had instanceof Value ? Environment.on_change : Environment.on_define)(name, value);
+		(this.globalNames?.has(name) ? Environment.global : this).define(name, value);
 	}
 
 }
@@ -823,25 +847,26 @@ class Call extends Expression {
 	static async invoke(fn, args, at) {
 		const errors = Language.main.errors;
 		if (Call.depth >= MAX_CALL_DEPTH) throw new CodeError(errors.MCD, at);
-		const caller = Environment.current, env = new Environment(fn.env);
-		env.locals = fn.locals; env.globalNames = fn.globalNames;
-		fn.params.forEach((p, i) => env.values.set(p.id.lexeme, args[i]));
-		Environment.current = env;
-		Call.depth++;
-		try {
-			for (const s of fn.body.statements) await s.execute();
-		} catch (e) {
-			if (e instanceof ReturnException) return e.value;
-			if (e instanceof BreakException || e instanceof ContinueException)
-				throw new CodeError(errors.BNL, [ e.statement.start, e.statement.end ]);
-			if ((e instanceof RangeError && /call stack/i.test(e.message)) ||
-				/too much recursion/i.test(e?.message ?? "")) throw new CodeError(errors.MCD, at);
-			throw e;
-		} finally {
-			Call.depth--;
-			Environment.current = caller;
-		}
-		return Value.none();
+		const label = `${fn.name}(${fn.params.map(p => p.id.lexeme).join(", ")})`;
+		// the scope of the call sees the globals (where the function was defined), not the caller
+		return await Environment.scoped(label, async env => {
+			env.locals = fn.locals; env.globalNames = fn.globalNames;
+			fn.params.forEach((p, i) => env.define(p.id.lexeme, args[i]));
+			Call.depth++;
+			try {
+				for (const s of fn.body.statements) await s.execute();
+			} catch (e) {
+				if (e instanceof ReturnException) return e.value;
+				if (e instanceof BreakException || e instanceof ContinueException)
+					throw new CodeError(errors.BNL, [ e.statement.start, e.statement.end ]);
+				if ((e instanceof RangeError && /call stack/i.test(e.message)) ||
+					/too much recursion/i.test(e?.message ?? "")) throw new CodeError(errors.MCD, at);
+				throw e;
+			} finally {
+				Call.depth--;
+			}
+			return Value.none();
+		}, fn.env);
 	}
 
 	async execute() {
@@ -958,17 +983,16 @@ class ListComprehension extends Expression { // [x * 2 for x in a if x > 0]
 		if (it.type !== "str" && it.type !== "list")
 			throw new CodeError(Language.main.errors.NIT, [ this.iterable.start, this.iterable.end ], [ it.type ]);
 		const items = it.type === "str" ? Array.from(it.value).map(c => new Value(c, "str")) : [ ...it.value ];
-		const outer = Environment.current, env = new Environment(outer); // the variable does not leak
-		Environment.current = env;
-		const out = [];
-		try {
+		// the variable does not leak: it lives in a scope of its own (shown in the debug view)
+		return await Environment.scoped(`[ for ${this.target.lexeme} ]`, async env => {
+			const out = [];
 			for (const item of items) {
-				env.values.set(this.target.lexeme, item);
+				env.define(this.target.lexeme, item);
 				if (this.condition && !(await this.condition.execute()).truthy) continue;
 				out.push(await this.element.execute());
 			}
-		} finally { Environment.current = outer; }
-		return new Value(out, "list");
+			return new Value(out, "list");
+		});
 	}
 }
 

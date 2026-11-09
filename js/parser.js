@@ -130,7 +130,10 @@ class Parser {
 			else if ([ "**", "//", "==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=" ].includes(two)) op = two;
 			else if ("+-*/%=<>(),:.;[]{}".includes(c)) op = c;
 			if (!op) throw new CodeError(errors.UNC, [ i, i + 1 ]);
-			if (op === '(') depth++; else if (op === ')' && depth > 0) depth--;
+			// a newline inside ( ), [ ] or { } does not end the statement, so a list (or a
+			// matrix) can be written on several lines
+			if (op === '(' || op === '[' || op === '{') depth++;
+			else if ((op === ')' || op === ']' || op === '}') && depth > 0) depth--;
 			tokens.push({ lexeme: op, type: "operator", position: i });
 			i += op.length;
 		}

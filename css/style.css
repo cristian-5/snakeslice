@@ -212,13 +212,53 @@ header {
 	min-height: 0;
 }
 
+#view-box {
+	display: flex;
+	flex-direction: column;
+}
+
 #debug {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
 	justify-content: flex-start;
 	align-items: center;
+	align-content: flex-start;
 	padding: 40px;
+	flex: 1;
+	min-height: 0;
+	overflow: auto; /* nested scopes make the view grow */
+}
+
+.scope {
+	margin: 22px 10px 10px;
+	padding: 0 6px 6px;
+	min-width: 90px;
+	min-height: 40px;
+	border: 2px dashed rgba(255, 255, 255, 0.35);
+	border-radius: 12px;
+	user-select: none;
+}
+
+.scope-label {
+	width: max-content;
+	margin: -11px 0 4px 6px;
+	padding: 0 6px;
+	background-color: #262626; /* same as the panel: the label interrupts the border */
+	color: rgba(255, 255, 255, 0.55);
+	font-family: monospace;
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 14px;
+	white-space: nowrap;
+	user-select: none;
+}
+
+.scope-content {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
 }
 
 .variable {
@@ -304,6 +344,10 @@ header {
 .float { background-color: #5900f3; }
 .string { background-color: rgb(0, 107, 42); }
 .char { background-color: rgb(178, 116, 20); }
+.none { background-color: #4d4d4d; }
+.list { background-color: #0b6e6e; } /* empty list, or one that mixes types */
+
+.array td.empty { color: rgba(255, 255, 255, 0.4); }
 
 .mtk9 {
 	color: #757575 !important;
