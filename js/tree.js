@@ -827,6 +827,7 @@ class Conditional extends Expression { // a if cond else b
 
 class Input extends Expression {
 	static prompt = async () => window.prompt("input") ?? "";
+	static pause = async () => {}; // pause(): wait for a key (set by main.js)
 	constructor(keyword, promptExpr, rpar) {
 		super(keyword.position, rpar.position + 1);
 		this.promptExpr = promptExpr;
@@ -889,7 +890,7 @@ class Call extends Expression {
 			return t === "any" ? a.value : a.to(t).value;
 		});
 		try {
-			const result = f.run(...converted);
+			const result = await f.run(...converted); // (a native may be async, like pause)
 			return result instanceof Value ? result : new Value(result ?? null, f.ret);
 		} catch (e) {
 			if (e instanceof NativeError) throw new CodeError(errors[e.code], at, e.args);

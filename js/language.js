@@ -72,6 +72,7 @@ class Language {
 				IMN: "Cannot import name '%' from module %"
 			},
 			saveMessage: "🐍 Snake SL/CE automatically saves your changes!",
+			pressAnyKey: "Press any key to continue . . . ",
 			loveMessage: "Made with ❤️ by <b>Prof. Cristian Antonuccio</b>",
 			noErrors: "✅ The code is valid, no errors found!",
 			saveFile: "Save as:",
@@ -147,6 +148,7 @@ class Language {
 				IMN: "Impossibile importare '%' dal modulo %"
 			},
 			saveMessage: "🐍 Snake SL/CE salva automaticamente le modifiche!",
+			pressAnyKey: "Premi un tasto per continuare . . . ",
 			loveMessage: "Fatto con ❤️ dal <b>Prof. Cristian Antonuccio</b>",
 			noErrors: "✅ Nessun errore trovato, il codice è valido!",
 			saveFile: "Salva con nome:",

@@ -27,6 +27,9 @@ function toBigInt(x) {
 }
 
 Library.register("", {
+	pause: [
+		{ args: [], ret: "None", run: () => Input.pause() }
+	],
 	abs: [
 		{ args: [ "int" ], ret: "int", run: x => x < 0n ? -x : x },
 		{ args: [ "float" ], ret: "float", run: Math.abs }

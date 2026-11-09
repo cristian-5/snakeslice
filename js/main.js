@@ -42,12 +42,33 @@ async function compile(sender = null) {
 	if (sender === "client") vanillaToast.show(Language.main.noErrors, { duration: 1000, fadeDuration: 500 });
 }
 
-async function run() {
+/// Thrown inside a program that was stopped because the student pressed Run again.
+class RunStopped { }
+
+// Only one program can run at a time: the interpreter keeps its state in statics
+// (Environment.current, Call.depth...), so two programs running together corrupt each
+// other. So pressing Run stops the program waiting at `input()` or `pause()` and starts
+// the new one only when the old one has finished unwinding.
+let latestRun = 0;     // number of the last time Run was pressed
+let executingRun = 0;  // number of the run being executed
+let runQueue = Promise.resolve();
+
+function run() {
+	const number = ++latestRun;
+	return runQueue = runQueue.then(() => execute(number));
+}
+
+async function execute(number) {
+	if (number !== latestRun) return; // Run was pressed again in the meantime
+	executingRun = number;
 	await compile("server");
 	terminal.reset();
+	terminal.input_enabled = terminal.input_ready = terminal.key_wait = false;
+	terminal.input_data = "";
 	resetDebugView();
 	if (!AST) return;
 	try { await AST.execute(); } catch (e) {
+		if (e instanceof RunStopped) return;
 		if (!(e instanceof CodeError)) {
 			console.error(e);
 			return;
@@ -61,12 +82,28 @@ async function run() {
 
 Print.write = text => terminal.write(text);
 Input.prompt = async () => {
+	const mine = executingRun;
 	terminal.input_enabled = true;
-	while (!terminal.input_ready) await wait(100);
+	while (!terminal.input_ready) {
+		await wait(100);
+		if (mine !== latestRun) throw new RunStopped(); // Run was pressed again
+	}
 	terminal.input_enabled = terminal.input_ready = false;
 	const data = terminal.input_data.replace(/[\r\n]+$/, ""); // input() keeps the spaces typed
 	terminal.input_data = "";
 	return data;
+};
+
+// pause(): like system("pause") in codeslice, waits for any key
+Input.pause = async () => {
+	const mine = executingRun;
+	Print.write(Language.main.pressAnyKey);
+	terminal.key_wait = true;
+	while (terminal.key_wait) {
+		await wait(50);
+		if (mine !== latestRun) { terminal.key_wait = false; throw new RunStopped(); }
+	}
+	Print.write("\n");
 };
 
 // ==== Debug view =============================================================

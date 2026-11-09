@@ -133,7 +133,9 @@
 		window.terminal.input_enabled = false;
 		window.terminal.input_ready = false;
 		window.terminal.input_data = "";
+		window.terminal.key_wait = false;
 		window.terminal.onKey(e => {
+			if (window.terminal.key_wait) { window.terminal.key_wait = false; return; } // pause()
 			if (!window.terminal.input_enabled) return;
 			switch (e.key) {
 				case "\r": case "\n":

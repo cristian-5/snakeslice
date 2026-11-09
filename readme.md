@@ -10,3 +10,4 @@ Web interpreter for `python`, made with ❤️ to help students.
 - [x] Debug view of variables, lists and lists of lists (matrices)
 - [x] Variable Scoping view (dashed box per function call and list comprehension in the debug view)
 - [x] List initializers: `[1, 2, 3]`, `[[1, 2], [3, 4]]`, also written on several lines (with a trailing comma and comments)
+- [x] `pause()` waits for a key press, like `system("pause")` in Code SL/CE (also in Italian: "Premi un tasto per continuare")
